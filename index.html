@@ -7,6 +7,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Nollie">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="firebase-config.js"></script>
 <script src="shim.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600;700&display=swap">
@@ -676,7 +677,7 @@ function vHoje(){
   <div class="stack">
     ${captureBar()}
     ${new Date().getDay()===0||(new Date().getDay()===1&&get(reviewId(currentReviewWeek())))?`<button class="revbanner" data-act="go" data-v="revisao"><span class="circ o">${ic("trend")}</span><span><b>${get(reviewId(currentReviewWeek()))?"Sua revisão da semana está pronta":"Domingo é dia de revisão"}</b><small>Veja como foi sua semana e as 3 prioridades da próxima.</small></span>${ic("arrow")}</button>`:""}
-    ${!store?.persistent&&S.ready?`<div class="banner">Seus dados ficam salvos só neste aparelho.</div>`:""}
+    ${!store?.persistent&&S.ready?`<div class="banner">Seus dados ficam salvos só neste aparelho. ${window.nollieSync?.available?`<button class="btn primary" data-backup="login">Entrar para sincronizar</button> `:""}<button class="btn ghost" data-backup="export">Exportar backup</button> <button class="btn ghost" data-backup="import">Importar backup</button></div>`:store?.persistent&&window.nollieSync?.available?`<div class="banner">Sincronizado entre seus aparelhos (funciona offline). <button class="btn ghost" data-backup="logout">Sair</button></div>`:""}
     <section class="dark today-dark">
       <div class="ph"><h2>Hoje importa</h2><div class="circles"><button class="circ w" data-act="go" data-v="tarefas" aria-label="Tarefas">${ic("bolt")}</button><button class="circ o" data-act="go" data-v="ia" aria-label="Assistente">${ic("spark")}</button></div></div>
       <div class="stats">

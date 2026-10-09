@@ -43,137 +43,44 @@
   const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open("nollie-blobs",1);r.onupgradeneeded=()=>r.result.createObjectStore("b");r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
   const tx=async(mode,fn)=>{const db=await idb();return new Promise((res,rej)=>{const t=db.transaction("b",mode),q=fn(t.objectStore("b"));t.oncomplete=()=>res(q?.result);t.onerror=()=>rej(t.error)})};
   const assets={
-    upload:async(blob,{type})=>{if(blob.size>20*1024*1024)throw err("too_large");const id=Date.now().toString(36)+Math.random().toString(36).slice(2,8);const bl=new Blob([blob],{type:type||blob.type});await tx("readwrite",s=>s.put(bl,id));ctx().then(c=>c&&pushBlob(c,id,bl)).catch(()=>{});return {id}},
-    delete:async id=>{await tx("readwrite",s=>s.delete(id));ctx().then(c=>c&&dropBlob(c,id)).catch(()=>{})}
+    upload:async(blob,{type})=>{if(blob.size>20*1024*1024)throw err("too_large");const id=Date.now().toString(36)+Math.random().toString(36).slice(2,8);await tx("readwrite",s=>s.put(new Blob([blob],{type:type||blob.type}),id));return {id}},
+    delete:id=>tx("readwrite",s=>s.delete(id))
   };
-
-  // backup: exporta/importa itens (localStorage) + anexos (IndexedDB) em um único .json
-  const rq=r=>new Promise((res,rej)=>{r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
-  const b64=b=>new Promise((res,rej)=>{const f=new FileReader();f.onload=()=>res(f.result);f.onerror=()=>rej(f.error);f.readAsDataURL(b)});
-  const toast=m=>{const t=document.getElementById("toast");if(!t)return alert(m);t.textContent=m;t.hidden=false;setTimeout(()=>t.hidden=true,3500)};
-  async function exportAll(){
-    const items=JSON.parse(localStorage.getItem("lifeos")||"[]");
-    const db=await idb(),st=db.transaction("b").objectStore("b");
-    const [keys,vals]=await Promise.all([rq(st.getAllKeys()),rq(st.getAll())]);
-    const blobs=await Promise.all(vals.map(async(b,i)=>({id:keys[i],type:b.type,data:await b64(b)})));
-    const day=new Date().toISOString().slice(0,10);
-    const file=new File([JSON.stringify({app:"nollie",v:1,at:new Date().toISOString(),items,blobs})],"nollie-backup-"+day+".json",{type:"application/json"});
-    if(navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file]});return}catch(e){if(e.name==="AbortError")return}}
-    const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=file.name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
-    toast("Backup exportado ("+items.length+" itens, "+blobs.length+" anexos).");
-  }
-  async function importAll(file){
-    const d=JSON.parse(await file.text());
-    if(d.app!=="nollie"||!Array.isArray(d.items))throw new Error("formato");
-    const cur=new Map(JSON.parse(localStorage.getItem("lifeos")||"[]").map(i=>[i.id,i]));
-    let n=0;
-    for(const it of d.items){const c=cur.get(it.id);if(!c||(it.updated||"")>(c.updated||"")){cur.set(it.id,it);n++}}
-    for(const b of d.blobs||[]){const blob=await (await fetch(b.data)).blob();await tx("readwrite",s=>s.put(new Blob([blob],{type:b.type}),b.id))}
-    localStorage.setItem("lifeos",JSON.stringify([...cur.values()]));
-    toast(n+" itens importados. Recarregando…");setTimeout(()=>location.reload(),900);
-  }
-  window.nollieBackup={export:exportAll,import:importAll};
-  const pick=document.createElement("input");pick.type="file";pick.accept=".json,application/json";pick.hidden=true;
-  pick.onchange=async()=>{const f=pick.files[0];pick.value="";if(f)try{await importAll(f)}catch(e){toast("Arquivo inválido.")}};
-  addEventListener("DOMContentLoaded",()=>document.body.appendChild(pick));
-  document.addEventListener("click",e=>{const el=e.target.closest("[data-backup]");if(!el)return;
-    const a=el.dataset.backup;
-    if(a==="export")exportAll().catch(()=>toast("Não consegui exportar."));else if(a==="import")pick.click();else if(a==="login")login();else if(a==="logout")logout()});
-  // pede armazenamento persistente para o navegador não apagar os dados offline
-  navigator.storage?.persist?.().catch(()=>{});
-
-  // sincronização: Firebase (Auth Google + Firestore com cache offline). Só liga se firebase-config.js estiver preenchido.
-  const CFG=window.NOLLIE_FIREBASE, CDN="https://www.gstatic.com/firebasejs/10.12.2/", CH=700*1024;
-  const pad=i=>String(i).padStart(4,"0");
-  let fbP=null;
-  const loadFb=()=>!(CFG&&CFG.apiKey)?Promise.resolve(null):(fbP||(fbP=(async()=>{
-    try{
-      const [A,F,Au]=await Promise.all([import(CDN+"firebase-app.js"),import(CDN+"firebase-firestore.js"),import(CDN+"firebase-auth.js")]);
-      const app=A.initializeApp(CFG);
-      const db=F.initializeFirestore(app,{ignoreUndefinedProperties:true,localCache:F.persistentLocalCache({tabManager:F.persistentMultipleTabManager()})});
-      const auth=Au.getAuth(app);
-      let red=false;try{red=!!sessionStorage.getItem("nollieRedir");sessionStorage.removeItem("nollieRedir")}catch(e){}
-      if(red)await Au.getRedirectResult(auth).catch(()=>{});
-      await auth.authStateReady();
-      return {F,Au,db,auth};
-    }catch(e){return null}
-  })()));
-  const ctx=async()=>{const f=await loadFb(),uid=f?.auth.currentUser?.uid;return uid?{...f,uid}:null};
-  const has=id=>tx("readonly",s=>s.getKey(id)).then(k=>k!==undefined);
-  const rerender=()=>{try{window.render?.();if(window.S?.editing)window.renderOverlay?.()}catch(e){}};
-
-  async function pushBlob(c,id,blob){
-    const {F,db,uid}=c, data=await b64(blob), n=Math.ceil(data.length/CH)||1, b=F.writeBatch(db);
-    for(let i=0;i<n;i++)b.set(F.doc(db,"u",uid,"blobs",id,"chunks",pad(i)),{d:data.slice(i*CH,(i+1)*CH)});
-    b.set(F.doc(db,"u",uid,"blobs",id),{type:blob.type||"",n,at:Date.now()});
-    return b.commit();
-  }
-  async function pullBlob(c,id,meta){
-    const {F,db,uid}=c, parts=[];
-    for(let i=0;i<meta.n;i++){const d=await F.getDoc(F.doc(db,"u",uid,"blobs",id,"chunks",pad(i)));if(!d.exists())return false;parts.push(d.data().d)}
-    const blob=await (await fetch(parts.join(""))).blob();
-    await tx("readwrite",s=>s.put(new Blob([blob],{type:meta.type||blob.type}),id));
-    return true;
-  }
-  async function dropBlob(c,id){
-    const {F,db,uid}=c;
-    await F.deleteDoc(F.doc(db,"u",uid,"blobs",id));
-    const cs=await F.getDocs(F.collection(db,"u",uid,"blobs",id,"chunks"));
-    await Promise.all(cs.docs.map(d=>F.deleteDoc(d.ref)));
-  }
-  let watching=false;
-  async function watchBlobs(c){
-    if(watching)return;watching=true;
-    let busy=false,again=false;
-    const run=async snap=>{
-      if(busy){again=snap;return}busy=true;let got=false;
-      try{for(const d of snap.docs){if(await has(d.id))continue;try{if(await pullBlob(c,d.id,d.data()))got=true}catch(e){}}}finally{busy=false}
-      if(got)rerender();
-      if(again){const a=again;again=false;run(a)}
-    };
-    c.F.onSnapshot(c.F.collection(c.db,"u",c.uid,"blobs"),run,()=>{});
-  }
-  // primeiro login: sobe o que já existia só neste aparelho
-  async function migrate(c){
-    const key="nollieMig:"+c.uid;try{if(localStorage.getItem(key))return}catch(e){}
-    const {F,db,uid}=c;
-    const cloud=new Map((await F.getDocs(F.collection(db,"u",uid,"items"))).docs.map(d=>[d.id,d.data()]));
-    for(const it of JSON.parse(localStorage.getItem("lifeos")||"[]")){
-      const o=cloud.get(it.id);if(o&&(o.updated||"")>=(it.updated||""))continue;
-      const {id,...body}=it;F.setDoc(F.doc(db,"u",uid,"items",id),body).catch(()=>{});
-    }
-    const have=new Set((await F.getDocs(F.collection(db,"u",uid,"blobs"))).docs.map(d=>d.id));
-    const idbx=await idb(),st=idbx.transaction("b").objectStore("b");
-    const [keys,vals]=await Promise.all([rq(st.getAllKeys()),rq(st.getAll())]);
-    for(let i=0;i<keys.length;i++)if(!have.has(keys[i]))pushBlob(c,keys[i],vals[i]).catch(()=>{});
-    try{localStorage.setItem(key,"1")}catch(e){}
-  }
-  const userApi={id:async()=>(await ctx())?.uid||null};
-  const dbApi={collection:()=>({
-    onSnapshot:(ok,bad)=>{ctx().then(c=>{
-      if(!c)return bad?.(err("no_auth"));
-      migrate(c).catch(()=>{});watchBlobs(c);
-      c.F.onSnapshot(c.F.collection(c.db,"u",c.uid,"items"),snap=>ok({docs:snap.docs}),bad);
-    })},
-    doc:id=>({
-      set:async body=>{const c=await ctx();if(!c)throw err("no_auth");c.F.setDoc(c.F.doc(c.db,"u",c.uid,"items",id),body).catch(()=>{})},
-      delete:async()=>{const c=await ctx();if(!c)throw err("no_auth");c.F.deleteDoc(c.F.doc(c.db,"u",c.uid,"items",id)).catch(()=>{})}
-    })
-  })};
-  async function login(){
-    const f=await loadFb();if(!f)return toast("Sincronização indisponível agora.");
-    const p=new f.Au.GoogleAuthProvider();
-    try{await f.Au.signInWithPopup(f.auth,p)}
-    catch(e){
-      if(e.code==="auth/popup-blocked"||e.code==="auth/operation-not-supported-in-this-environment"){try{sessionStorage.setItem("nollieRedir","1")}catch(_){}await f.Au.signInWithRedirect(f.auth,p);return}
-      if(e.code==="auth/popup-closed-by-user"||e.code==="auth/cancelled-popup-request")return;
-      return toast("Não consegui entrar.");
-    }
-    location.reload();
-  }
-  async function logout(){const f=await loadFb();if(f)await f.Au.signOut(f.auth);location.reload()}
-  window.nollieSync={available:!!(CFG&&CFG.apiKey),login,logout};
-  window.claude={use:async n=>n==="sample"?sample:n==="assets"?assets:n==="db"?(await ctx()?dbApi:null):n==="user"?userApi:null};
+  window.claude={use:async n=>n==="sample"?sample:n==="assets"?assets:null};
   window.nollieSetKey=()=>{try{localStorage.removeItem(KEY)}catch(e){}apiKey(true)};
+
+  // configurações: importar/exportar dados e chave da API
+  addEventListener("DOMContentLoaded",()=>{
+    const css=document.createElement("style");
+    css.textContent=".nset{position:fixed;top:calc(10px + env(safe-area-inset-top,0px));right:12px;z-index:25;width:38px;height:38px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--muted);display:grid;place-items:center;font-size:18px;opacity:.85}.nsb{position:fixed;inset:0;z-index:50;background:rgba(5,5,5,.6);display:grid;place-items:center;padding:16px}.nsbox{background:var(--surface);color:var(--fg);border-radius:24px;padding:22px;width:min(380px,100%);display:flex;flex-direction:column;gap:10px}.nsbox h3{margin:0 0 4px;font:600 20px var(--f)}.nsbox p{margin:0;color:var(--muted);font-size:13.5px}";
+    document.head.appendChild(css);
+    const b=document.createElement("button");b.className="nset";b.textContent="⚙";b.setAttribute("aria-label","Configurações");document.body.appendChild(b);
+    const inp=document.createElement("input");inp.type="file";inp.accept="application/json,.json";inp.hidden=true;document.body.appendChild(inp);
+    const close=()=>document.querySelector(".nsb")?.remove();
+    b.onclick=()=>{
+      const d=document.createElement("div");d.className="nsb";
+      d.innerHTML='<div class="nsbox"><h3>Configurações</h3><p>Seus dados ficam só neste aparelho.</p><button class="btn" id="nsExp">Exportar dados</button><button class="btn" id="nsImp">Importar dados</button><button class="btn" id="nsKey">Trocar chave da API</button><button class="btn ghost" id="nsX">Fechar</button></div>';
+      d.onclick=e=>{if(e.target===d)close()};document.body.appendChild(d);
+      d.querySelector("#nsX").onclick=close;
+      d.querySelector("#nsKey").onclick=()=>{close();try{window.nollieSetKey()}catch(e){}};
+      d.querySelector("#nsImp").onclick=()=>inp.click();
+      d.querySelector("#nsExp").onclick=()=>{
+        let items=[];try{items=JSON.parse(localStorage.getItem("lifeos")||"[]")}catch(e){}
+        const a=document.createElement("a");a.href=URL.createObjectURL(new Blob([JSON.stringify({app:"nollie",version:1,items})],{type:"application/json"}));
+        a.download="nollie-dados.json";a.click();
+      };
+    };
+    inp.onchange=async()=>{
+      const f=inp.files[0];inp.value="";if(!f)return;
+      try{
+        const j=JSON.parse(await f.text());const items=Array.isArray(j)?j:j.items;
+        if(!Array.isArray(items)||!items.every(i=>i&&i.id&&i.kind))throw 0;
+        let cur=[];try{cur=JSON.parse(localStorage.getItem("lifeos")||"[]")}catch(e){}
+        const m=new Map(cur.map(i=>[i.id,i]));items.forEach(i=>m.set(i.id,i));
+        localStorage.setItem("lifeos",JSON.stringify([...m.values()]));
+        alert(items.length+" itens importados.");location.reload();
+      }catch(e){alert("Arquivo inválido. Use o nollie-dados.json exportado.")}
+    };
+  });
   if("serviceWorker" in navigator)addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
 })();
